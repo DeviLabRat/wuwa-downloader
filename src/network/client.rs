@@ -18,7 +18,7 @@ use crate::io::file::{file_size, get_filename};
 use crate::io::logging::{SharedLogFile, log_error};
 use crate::io::util::{clear_screen, get_version, read_line};
 
-const INDEX_URL: &str = "https://gist.githubusercontent.com/yuhkix/b8796681ac2cd3bab11b7e8cdc022254/raw/4435fd290c07f7f766a6d2ab09ed3096d83b02e3/wuwa.json";
+const INDEX_URL: &str = "https://gist.githubusercontent.com/DeviLabRat/5fa94fba3dcd269744c4f8dd107916a2/raw/021b8d04951fa3d7a070cce63d0d6984a19c4d08/wuwa.json";
 const MAX_RETRIES: usize = 3;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10_000);
 
@@ -55,13 +55,13 @@ async fn decompress_if_gzipped(response: reqwest::Response) -> Result<String, St
 
 pub async fn fetch_index(
     client: &Client,
-    config: &Config,
+    index_url: &str,
     log_file: &SharedLogFile,
 ) -> Result<Value, String> {
     println!("{} Fetching index file...", Status::info());
 
     let response = match client
-        .get(&config.index_url)
+        .get(index_url)
         .timeout(Duration::from_secs(30))
         .send()
         .await
@@ -581,7 +581,7 @@ pub fn get_custom_config(_client: &Client) -> Result<Config, String> {
 
     println!("\n{} Configuration loaded successfully", Status::success());
     Ok(Config {
-        index_url,
+        index_urls: vec![index_url],
         zip_bases: vec![base_url],
     })
 }
@@ -611,6 +611,10 @@ pub async fn get_config(client: &Client) -> Result<Config, String> {
 
     let config_text = decompress_if_gzipped(response).await?;
     let config: Value = from_str(&config_text).map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    if config.get("resourcePacks").is_some() {
+        return parse_pack_config(&config, ask_texture_variant()?);
+    }
 
     let has_default = config.get("default").is_some();
     let has_predownload = config.get("predownload").is_some();
@@ -753,7 +757,7 @@ pub async fn get_config(client: &Client) -> Result<Config, String> {
         .collect();
 
     Ok(Config {
-        index_url: full_index_url,
+        index_urls: vec![full_index_url],
         zip_bases,
     })
 }
@@ -778,8 +782,9 @@ pub async fn fetch_gist(client: &Client) -> Result<String, String> {
     let entries = [
         ("live", "os", "Live - OS"),
         ("live", "cn", "Live - CN"),
-        ("beta", "os", "Beta - OS"),
-        ("beta", "cn", "Beta - CN"),
+        // Temporarily disabled, searching for links
+        // ("beta", "os", "Beta - OS"),
+        // ("beta", "cn", "Beta - CN"),
     ];
 
     println!("{} Available versions:", Status::info());
@@ -812,6 +817,7 @@ pub async fn fetch_gist(client: &Client) -> Result<String, String> {
             .and_then(|d| d.get("config"))
             .and_then(|c| c.get("version"))
             .or_else(|| version_json.get("default").and_then(|d| d.get("version")))
+            .or_else(|| version_json.pointer("/resourcePacks/common/version"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
@@ -827,9 +833,69 @@ pub async fn fetch_gist(client: &Client) -> Result<String, String> {
         match input.trim() {
             "1" => return get_version(&gist_data, "live", "os"),
             "2" => return get_version(&gist_data, "live", "cn"),
-            "3" => return get_version(&gist_data, "beta", "os"),
-            "4" => return get_version(&gist_data, "beta", "cn"),
+            // "3" => return get_version(&gist_data, "beta", "os"),
+            // "4" => return get_version(&gist_data, "beta", "cn"),
             _ => println!("{} Invalid selection", Status::error()),
         }
     }
+}
+
+fn ask_texture_variant() -> Result<&'static str, String> {
+    println!("\n{} Texture quality:", Status::info());
+    println!("1. SD (Standard)\n2. HD (High)\n3. UHD (Ultra High)");
+    loop {
+        print!("{} Select textures (1, 2 or 3): ", Status::question());
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        match read_line().map_err(|e| e.to_string())?.trim() {
+            "1" => return Ok("SD"),
+            "2" => return Ok("HD"),
+            "3" => return Ok("UHD"),
+            _ => println!("{} Invalid choice, please enter 1, 2 or 3", Status::error()),
+        }
+    }
+}
+
+fn parse_pack_config(data: &Value, texture: &str) -> Result<Config, String> {
+    let cdns: Vec<&str> = data
+        .get("cdnList")
+        .and_then(Value::as_array)
+        .ok_or("Missing CDN list")?
+        .iter()
+        .filter_map(|cdn| cdn.get("url").and_then(Value::as_str))
+        .filter(|url| !url.is_empty())
+        .collect();
+    let first_cdn = cdns.first().ok_or("No valid CDN URLs found")?;
+    let pack_names = data
+        .pointer(&format!("/bundles/{texture}/resourcePacks"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("Missing {texture} resource bundle"))?;
+
+    let mut index_urls = Vec::new();
+    let mut base_url: Option<&str> = None;
+    for name in pack_names {
+        let name = name.as_str().ok_or("Invalid resource pack name")?;
+        let pack = data
+            .pointer(&format!("/resourcePacks/{name}"))
+            .ok_or_else(|| format!("Missing resource pack: {name}"))?;
+        let field = |key: &str| {
+            pack.get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("Missing or invalid {key} in resource pack {name}"))
+        };
+        let base = field("baseUrl")?;
+        if base_url.is_some_and(|b| b != base) {
+            return Err(format!("Resource pack {name} has a different baseUrl"));
+        }
+        base_url = Some(base);
+        index_urls.push(build_download_url(first_cdn, field("indexFile")?));
+    }
+    let base_url = base_url.ok_or_else(|| format!("Empty {texture} resource bundle"))?;
+
+    Ok(Config {
+        index_urls,
+        zip_bases: cdns
+            .iter()
+            .map(|cdn| build_download_url(cdn, base_url))
+            .collect(),
+    })
 }

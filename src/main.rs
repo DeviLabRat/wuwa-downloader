@@ -99,14 +99,17 @@ async fn main() {
         options.verify_concurrency.to_string().cyan()
     );
 
-    let data = match fetch_index(&client, &config, &log_file).await {
-        Ok(data) => data,
-        Err(e) => exit_with_error(&log_file, &e),
-    };
-    let resources = match parse_resources(&data) {
-        Ok(resources) => resources,
-        Err(err) => exit_with_error(&log_file, &err),
-    };
+    let mut resources = Vec::new();
+    for index_url in &config.index_urls {
+        let data = match fetch_index(&client, index_url, &log_file).await {
+            Ok(data) => data,
+            Err(e) => exit_with_error(&log_file, &e),
+        };
+        match parse_resources(&data) {
+            Ok(items) => resources.extend(items),
+            Err(err) => exit_with_error(&log_file, &err),
+        }
+    }
 
     println!(
         "{} Found {} files to download\n",
