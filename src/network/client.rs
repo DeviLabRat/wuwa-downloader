@@ -18,7 +18,7 @@ use crate::io::file::{file_size, get_filename};
 use crate::io::logging::{SharedLogFile, log_error};
 use crate::io::util::{clear_screen, get_version, read_line};
 
-const INDEX_URL: &str = "https://gist.githubusercontent.com/DeviLabRat/5fa94fba3dcd269744c4f8dd107916a2/raw/021b8d04951fa3d7a070cce63d0d6984a19c4d08/wuwa.json";
+const INDEX_URL: &str = "https://gist.githubusercontent.com/DeviLabRat/5fa94fba3dcd269744c4f8dd107916a2/raw/9a4f6f39b68ac6280a026c606c932e3a181a3ffd/wuwa.json";
 const MAX_RETRIES: usize = 3;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10_000);
 
@@ -782,9 +782,8 @@ pub async fn fetch_gist(client: &Client) -> Result<String, String> {
     let entries = [
         ("live", "os", "Live - OS"),
         ("live", "cn", "Live - CN"),
-        // Temporarily disabled, searching for links
-        // ("beta", "os", "Beta - OS"),
-        // ("beta", "cn", "Beta - CN"),
+        ("beta", "os", "Beta - OS"),
+        ("beta", "cn", "Beta - CN"),
     ];
 
     println!("{} Available versions:", Status::info());
@@ -833,8 +832,8 @@ pub async fn fetch_gist(client: &Client) -> Result<String, String> {
         match input.trim() {
             "1" => return get_version(&gist_data, "live", "os"),
             "2" => return get_version(&gist_data, "live", "cn"),
-            // "3" => return get_version(&gist_data, "beta", "os"),
-            // "4" => return get_version(&gist_data, "beta", "cn"),
+            "3" => return get_version(&gist_data, "beta", "os"),
+            "4" => return get_version(&gist_data, "beta", "cn"),
             _ => println!("{} Invalid selection", Status::error()),
         }
     }
