@@ -15,7 +15,6 @@ ctrlc = "3.5.1"
 shellexpand = "3.1.1"
 flate2 = "1.1.8"
 indicatif = "0.18.3"
-rayon = "1.11.0"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
