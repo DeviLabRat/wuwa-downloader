@@ -29,7 +29,7 @@ High-performance, resilient downloader for Wuthering Waves with multi-CDN fallba
 - **Multi-CDN fallback**: Automatically tries multiple mirrors on failures
 - **Interactive version selection**: Choose Live/Beta and OS/CN variants
 - **Pipeline downloads**: Verification workers and download workers run concurrently
-- **Integrity checks**: Per-file MD5 verification; corrupted or oversized files are deleted before download
+- **Integrity checks**: Per-file MD5/SHA-1 verification; corrupted or oversized files are deleted before download
 - **Smart retries**: Up to 3 retry attempts per CDN with robust timeouts
 - **Streaming downloads**: Chunked I/O with resume support when possible
 - **Clear progress**: Verification bar, total download bar, and per-worker progress bars
@@ -72,6 +72,42 @@ cargo build --release
    - Total files
 8. Press Enter to exit only when there are no unprocessed files
 
+### Experimental: Additional resources for an installed game
+
+> **Experimental:** Additional resource downloads have only been tested with game version **3.8**.
+
+The downloader saves videos and core hotfix files under `Client/Saved/Resources`; it does not install the base game.
+
+1. Select **3. Additional resources for an installed game**, then choose the installed Windows game root containing `Client`. Press Enter to reuse a saved directory, or the current directory on first use.
+2. If the bootstrap INIs are inside the base PAK, configure a compatible `vrepak` executable and an AES key source: a local JSON file or HTTP(S) endpoint. Neither is needed when both `Client/Config/Kuro/KuroPublicConfig.ini` and `Client/Config/Package/ParamsConfig.ini` exist as loose files.
+3. Set worker counts, then choose **Videos**, **Core hotfixes**, **Both**, or **Cancel** using numbered choices.
+4. Choose SD, HD, or UHD quality. For videos, choose all packages or specific IDs. Available IDs are displayed; a number such as `100` selects all its variants, while `100_0` selects one variant.
+5. Review the summary and download progress. Sizes are shown in GiB.
+
+Extracting bootstrap configuration from the base PAK requires [vrepak](https://github.com/qzwtrp/vrepak), installed separately. Use a build supporting `--engine wuthering-waves --aes-key <key> get <pak> <entry>`. Discovery checks the saved path, `WUWA_VREPAK`, PATH, the downloader's directory, and the current directory. AES keys must match your installed game build. Set `WUWA_KEYS_FILE` to provide a default AES key source.
+
+Preferences are saved in `additional-resources-settings.json` in the working directory. Set `WUWA_ADDITIONAL_RESOURCES_SETTINGS` to use another settings file. Relative paths loaded from settings are resolved against that file's directory. A typical keys document has this structure (replace the placeholders with valid hexadecimal values):
+
+```json
+{
+  "mainKey": "<64 hexadecimal digits, optionally prefixed with 0x>",
+  "dynamicKeys": [
+    {"guid": "<32 hexadecimal digits, with optional hyphens>", "key": "<64 hexadecimal digits>"}
+  ]
+}
+```
+
+The default keys expression is `$['mainKey','dynamicKeys']`. A custom JSONPath expression can select these values from differently structured endpoint responses. Keys are loaded for the current run; the settings file stores the source and expression rather than the returned keys.
+
+Advanced settings:
+
+- `entry_urls` (bootstrap index URLs) with `package_version` bypasses local bootstrap extraction.
+- `package_version` alone overrides the INI version.
+- `parallel` selects a named bootstrap entry.
+- `crypto` supplies the Base64 `key` and `iv` for remote configuration decoding.
+
+Most installations should use automatic bootstrap discovery and the bundled crypto defaults.
+
 ## 🔍 Technical Details
 ### How It Works
 - Remote config discovery via JSON
@@ -95,7 +131,7 @@ cargo build --release
   - Verification workers: `8`
   - Download workers: `4`
 - **Timeouts**: 30s for index/config fetches, extended timeout for transfers
-- **Logging**: 
+- **Logging**:
   - Errors: `logs.log`
 - **Progress**:
   - Verification progress bar
@@ -114,7 +150,7 @@ For detailed guides, workflow overview, and deeper technical explanations, see t
 ## 🧪 Development
 ### Environment Setup
 - **Required**: Rust nightly (1.87.0-nightly+)
-- **Dependencies**: 
+- **Dependencies**:
   - `reqwest`
   - `indicatif`
   - `flate2`
