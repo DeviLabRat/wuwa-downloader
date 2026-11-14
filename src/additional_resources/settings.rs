@@ -12,7 +12,7 @@ use tokio::process::Command;
 
 use super::{crypto::RemoteCrypto, keys};
 use crate::config::status::Status;
-use crate::io::util::read_line;
+use crate::io::{file::get_dir, util::read_line};
 
 #[derive(Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -23,8 +23,6 @@ pub struct AdditionalResourcesSettings {
     pub keys_source: Option<String>,
     #[serde(deserialize_with = "expression")]
     pub keys_expression: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub game_dir: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub entry_urls: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,7 +51,6 @@ impl Default for AdditionalResourcesSettings {
             vrepak: None,
             keys_source: None,
             keys_expression: keys::DEFAULT_EXPRESSION.into(),
-            game_dir: None,
             entry_urls: vec![],
             package_version: None,
             parallel: None,
@@ -134,34 +131,11 @@ async fn find_vrepak(saved: Option<&str>) -> Option<String> {
     None
 }
 
-fn game_path(value: &str, manual_bootstrap: bool) -> Result<PathBuf, String> {
-    let path = PathBuf::from(shellexpand::tilde(value).into_owned());
-    if !path.is_dir() {
-        return Err("Game directory does not exist".into());
-    }
-    if !manual_bootstrap
-        && !path
-            .join("Client/Content/Paks/pakchunk0-WindowsNoEditor.pak")
-            .is_file()
-        && !(path
-            .join("Client/Config/Kuro/KuroPublicConfig.ini")
-            .is_file()
-            && path
-                .join("Client/Config/Package/ParamsConfig.ini")
-                .is_file())
-    {
-        return Err("Select the game root containing Client and its base PAK".into());
-    }
-    path.canonicalize()
-        .map_err(|e| format!("Cannot open game directory: {e}"))
-}
-
 impl AdditionalResourcesSettings {
     fn normalize(&mut self) {
         for field in [
             &mut self.vrepak,
             &mut self.keys_source,
-            &mut self.game_dir,
             &mut self.package_version,
             &mut self.parallel,
         ] {
@@ -211,8 +185,11 @@ impl AdditionalResourcesSettings {
         let mut settings: Self = if bytes.iter().all(u8::is_ascii_whitespace) {
             Self::default()
         } else {
-            let value: Value = serde_json::from_slice(&bytes)
+            let mut value: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("Invalid resource settings: {e}"))?;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("game_dir");
+            }
             if value.is_null() {
                 Self::default()
             } else {
@@ -231,9 +208,6 @@ impl AdditionalResourcesSettings {
             && tool.contains(['/', '\\'])
         {
             *tool = absolute(tool, base);
-        }
-        if let Some(game) = &mut settings.game_dir {
-            *game = absolute(game, base);
         }
         settings.config_path = Some(path);
         Ok(settings)
@@ -263,20 +237,7 @@ impl AdditionalResourcesSettings {
         self.normalize();
         println!("\n{} Resource Configuration", Status::info());
         let manual = !self.entry_urls.is_empty() && self.package_version.is_some();
-        let folder = loop {
-            let default = self.game_dir.as_deref().unwrap_or("");
-            let label = if default.is_empty() {
-                "Enter the installed game root containing Client (press Enter for the current directory)"
-            } else {
-                "Enter the installed game root containing Client"
-            };
-            let input = question(label, "Saved game directory", default)?;
-            let input = if input.is_empty() { "." } else { &input };
-            match game_path(input, manual) {
-                Ok(path) => break path,
-                Err(error) => println!("{} {error}", Status::error()),
-            }
-        };
+        let folder = get_dir().map_err(|e| e.to_string())?;
         let needs_extraction = !manual
             && ![
                 "Client/Config/Kuro/KuroPublicConfig.ini",
@@ -348,7 +309,6 @@ impl AdditionalResourcesSettings {
                 }
             }
         }
-        self.game_dir = Some(folder.to_string_lossy().into_owned());
         self.save().await?;
         Ok(folder)
     }

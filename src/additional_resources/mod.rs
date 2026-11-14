@@ -33,13 +33,23 @@ pub fn validate_url(value: &str) -> Result<(), String> {
 }
 
 async fn fetch_bytes(client: &Client, url: &str) -> Result<Vec<u8>, String> {
+    fetch_optional_bytes(client, url)
+        .await?
+        .ok_or_else(|| format!("HTTP 404 Not Found for {url}"))
+}
+
+async fn fetch_optional_bytes(client: &Client, url: &str) -> Result<Option<Vec<u8>>, String> {
     validate_url(url)?;
     let mut response = client
         .get(url)
         .timeout(Duration::from_secs(15))
         .send()
         .await
-        .map_err(|e| format!("Request failed for {url}: {e}"))?
+        .map_err(|e| format!("Request failed for {url}: {e}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    response = response
         .error_for_status()
         .map_err(|e| format!("HTTP failure for {url}: {e}"))?;
     let mut bytes = Vec::new();
@@ -49,7 +59,7 @@ async fn fetch_bytes(client: &Client, url: &str) -> Result<Vec<u8>, String> {
         }
         bytes.extend_from_slice(&chunk);
     }
-    Ok(bytes)
+    Ok(Some(bytes))
 }
 
 async fn newest_config(
@@ -58,29 +68,52 @@ async fn newest_config(
     crypto: &RemoteCrypto,
     timestamp: &str,
 ) -> Result<Value, String> {
+    optional_config(client, urls, crypto, timestamp)
+        .await?
+        .ok_or_else(|| "All configuration mirrors returned HTTP 404 Not Found".into())
+}
+
+async fn optional_config(
+    client: &Client,
+    urls: Vec<String>,
+    crypto: &RemoteCrypto,
+    timestamp: &str,
+) -> Result<Option<Value>, String> {
     let mut tasks = JoinSet::new();
     for url in urls {
         let client = client.clone();
         let crypto = crypto.clone();
-        tasks.spawn(async move { crypto.decode(&fetch_bytes(&client, &url).await?) });
+        tasks.spawn(async move {
+            fetch_optional_bytes(&client, &url)
+                .await?
+                .map(|bytes| crypto.decode(&bytes))
+                .transpose()
+        });
     }
     let mut best = None;
     let mut latest = 0;
-    let mut last_error = "No configuration URLs".to_string();
+    let mut last_error = tasks
+        .is_empty()
+        .then(|| "No configuration URLs".to_string());
     while let Some(result) = tasks.join_next().await {
         match result.map_err(|e| e.to_string()).and_then(|v| v) {
-            Ok(data) => match data.get(timestamp).and_then(Value::as_u64) {
+            Ok(None) => {}
+            Ok(Some(data)) => match data.get(timestamp).and_then(Value::as_u64) {
                 Some(time) if best.is_none() || time > latest => {
                     latest = time;
                     best = Some(data);
                 }
                 Some(_) => {}
-                None => last_error = format!("Configuration is missing {timestamp}"),
+                None => last_error = Some(format!("Configuration is missing {timestamp}")),
             },
-            Err(error) => last_error = error,
+            Err(error) => last_error = Some(error),
         }
     }
-    best.ok_or_else(|| format!("All configuration mirrors failed: {last_error}"))
+    match (best, last_error) {
+        (Some(data), _) => Ok(Some(data)),
+        (None, Some(error)) => Err(format!("All configuration mirrors failed: {error}")),
+        (None, None) => Ok(None),
+    }
 }
 
 fn entry_fields<'a>(
@@ -160,38 +193,63 @@ async fn resource_context(
 
 async fn discover_videos(
     client: &Client,
-    quality: &str,
+    selected_quality: &mut Option<String>,
     settings: &AdditionalResourcesSettings,
     context: &ResourceContext,
 ) -> Result<Vec<ResourceItem>, String> {
-    let quality = quality.to_ascii_lowercase();
-    if !matches!(quality.as_str(), "sd" | "hd" | "uhd") {
-        return Err("Video quality must be SD, HD or UHD".into());
-    }
-    println!(
-        "{} Fetching video configuration for Windows {} ({})...",
-        Status::info(),
-        context.package_version,
-        quality.to_uppercase()
-    );
     let prefixes = &context.prefixes;
     let mix = &context.mix;
     let res = &context.res;
-    let config_route = format!("{mix}/Windows/VideoConfig_{quality}.json");
-    let config_urls = prefixes
-        .iter()
-        .map(|p| build_download_url(p, &config_route))
-        .collect();
-    let config = newest_config(client, config_urls, &settings.crypto, "UpdateTime").await?;
+    let urls = |name: &str| {
+        let route = format!("{mix}/Windows/{name}");
+        prefixes
+            .iter()
+            .map(|p| build_download_url(p, &route))
+            .collect()
+    };
+    let legacy = optional_config(
+        client,
+        urls("VideoConfig.json"),
+        &settings.crypto,
+        "UpdateTime",
+    )
+    .await;
+    let (config, quality) = match legacy {
+        Ok(Some(config)) => (config, String::new()),
+        fallback => {
+            let quality = match selected_quality {
+                Some(quality) => quality,
+                None => selected_quality.insert(ask_quality()?),
+            }
+            .to_ascii_lowercase();
+            let name = format!("VideoConfig_{quality}.json");
+            let config = newest_config(client, urls(&name), &settings.crypto, "UpdateTime")
+                .await
+                .map_err(|error| match fallback {
+                    Err(probe_error) => {
+                        format!("{error}; legacy configuration probe failed: {probe_error}")
+                    }
+                    _ => error,
+                })?;
+            (config, quality)
+        }
+    };
+    println!(
+        "{} Fetching video manifest for Windows {}...",
+        Status::info(),
+        context.package_version
+    );
     let expected = config
         .get("IndexSha1")
         .and_then(Value::as_str)
         .ok_or("Video configuration has no IndexSha1")?;
     manifest::validate_sha1(expected)?;
-    let route = format!(
-        "{mix}/Windows/{}/Video/VideoManifest_{quality}.json",
-        context.package_version
-    );
+    let filename = if quality.is_empty() {
+        "VideoManifest.json".to_string()
+    } else {
+        format!("VideoManifest_{quality}.json")
+    };
+    let route = format!("{mix}/Windows/{}/Video/{filename}", context.package_version);
     let mut last_error = String::new();
     for prefix in prefixes {
         let url = build_download_url(prefix, &route);

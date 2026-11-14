@@ -78,7 +78,7 @@ cargo build --release
 
 The downloader saves videos and core hotfix files under `Client/Saved/Resources`; it does not install the base game.
 
-1. Select **3. Additional resources for an installed game**, then choose the installed Windows game root containing `Client`. Press Enter to reuse a saved directory, or the current directory on first use.
+1. Select **3. Additional resources for an installed game**, then choose the installed Windows game root containing `Client`. Press Enter to use the current directory.
 2. If the bootstrap INIs are inside the base PAK, configure a compatible `vrepak` executable and an AES key source: a local JSON file or HTTP(S) endpoint. Neither is needed when both `Client/Config/Kuro/KuroPublicConfig.ini` and `Client/Config/Package/ParamsConfig.ini` exist as loose files.
 3. Set worker counts, then choose **Videos**, **Core hotfixes**, **Both**, or **Cancel** using numbered choices.
 4. Choose SD, HD, or UHD quality. For videos, choose all packages or specific IDs. Available IDs are displayed; a number such as `100` selects all its variants, while `100_0` selects one variant.

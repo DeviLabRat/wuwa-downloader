@@ -4,7 +4,10 @@ use reqwest::Client;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 
-use super::{AdditionalResourcesSettings, ResourceContext, fetch_bytes, manifest, newest_config};
+use super::{
+    AdditionalResourcesSettings, ResourceContext, ask_quality_for, fetch_bytes, manifest,
+    newest_config, optional_config,
+};
 use crate::{
     config::cfg::{Checksum, ResourceItem},
     config::status::Status,
@@ -18,45 +21,57 @@ pub struct HotfixPlan {
 
 pub(super) async fn discover_core(
     client: &Client,
-    quality: &str,
+    quality: &mut Option<String>,
     settings: &AdditionalResourcesSettings,
     context: &ResourceContext,
 ) -> Result<HotfixPlan, String> {
-    let quality = quality.to_ascii_uppercase();
-    if !matches!(quality.as_str(), "SD" | "HD" | "UHD") {
-        return Err("Resource quality must be SD, HD or UHD".into());
-    }
     println!(
-        "{} Fetching core hotfix configuration for Windows {} ({quality})...",
+        "{} Fetching core hotfix configuration for Windows {}...",
         Status::info(),
         context.package_version
     );
+    let urls = |name: &str| {
+        let route = format!("{}/Windows/{name}", context.mix);
+        context
+            .prefixes
+            .iter()
+            .map(|p| build_download_url(p, &route))
+            .collect()
+    };
+    let base = newest_config(client, urls("config.json"), &settings.crypto, "UpdateTime").await?;
+    let sd = optional_config(
+        client,
+        urls("config_sd.json"),
+        &settings.crypto,
+        "UpdateTime",
+    )
+    .await;
+    let mut configs = vec![("config.json".to_string(), None, base)];
+    if !matches!(sd, Ok(None)) {
+        let selected = match quality {
+            Some(selected) => selected,
+            None => quality.insert(ask_quality_for("Resource quality")?),
+        };
+        let name = format!("config_{}.json", selected.to_ascii_lowercase());
+        let config = if selected == "SD" {
+            sd?.ok_or("Missing SD configuration")?
+        } else {
+            newest_config(client, urls(&name), &settings.crypto, "UpdateTime")
+                .await
+                .map_err(|error| match &sd {
+                    Err(probe_error) => {
+                        format!("{error}; SD configuration probe failed: {probe_error}")
+                    }
+                    _ => error,
+                })?
+        };
+        configs.push((name, Some(selected.to_string()), config));
+    }
     let mut plan = HotfixPlan {
         resources: Vec::new(),
         versions: BTreeMap::new(),
     };
-    for (config_name, tier) in [
-        ("config.json".to_string(), None),
-        (
-            format!("config_{}.json", quality.to_ascii_lowercase()),
-            Some(quality.as_str()),
-        ),
-    ] {
-        let route = format!("{}/Windows/{config_name}", context.mix);
-        let urls = context
-            .prefixes
-            .iter()
-            .map(|p| build_download_url(p, &route))
-            .collect();
-        let config = newest_config(client, urls, &settings.crypto, "UpdateTime").await?;
-        if config.get("PackageVersion").and_then(Value::as_str)
-            != Some(context.package_version.as_str())
-        {
-            return Err(format!(
-                "Core configuration {config_name} does not match installed package {}",
-                context.package_version
-            ));
-        }
+    for (config_name, tier, config) in configs {
         for (key, label) in [("launcher", "Launcher"), ("resource", "Resource")] {
             if tier.is_some() && key == "launcher" {
                 continue;
@@ -88,7 +103,7 @@ pub(super) async fn discover_core(
             };
             manifest::validate_sha1(hash)?;
             let group = match tier {
-                Some(tier) => format!("{label}_{tier}"),
+                Some(ref tier) => format!("{label}_{tier}"),
                 None => label.to_string(),
             };
             let route = format!("{}/Windows/{version}/Manifest{group}.txt", context.mix);

@@ -4,8 +4,7 @@ use colored::Colorize;
 use reqwest::Client;
 
 use super::{
-    AdditionalResourcesSettings, ask_quality, ask_quality_for, choose_resources, discover_videos,
-    hotfix, resource_context,
+    AdditionalResourcesSettings, choose_resources, discover_videos, hotfix, resource_context,
 };
 use crate::config::{
     cfg::{Config, ResourceItem},
@@ -73,15 +72,11 @@ pub async fn discover_resources(
     let Some(content) = choose_content()? else {
         return Ok(None);
     };
-    let quality = if !content.core {
-        ask_quality()?
-    } else {
-        ask_quality_for("Resource quality")?
-    };
     let context = resource_context(client, folder, settings).await?;
     let mut resources = Vec::new();
+    let mut quality = None;
     if content.core {
-        let plan = hotfix::discover_core(client, &quality, settings, &context).await?;
+        let plan = hotfix::discover_core(client, &mut quality, settings, &context).await?;
         for (group, version) in &plan.versions {
             println!("{} {group}: {}", Status::info(), version.cyan());
         }
@@ -89,7 +84,7 @@ pub async fn discover_resources(
     }
     let core_files = resources.len();
     if content.videos {
-        let plan = discover_videos(client, &quality, settings, &context).await?;
+        let plan = discover_videos(client, &mut quality, settings, &context).await?;
         let Some(videos) = choose_resources(&plan)? else {
             return Ok(None);
         };

@@ -43,13 +43,18 @@ pub(super) fn size(value: Option<&Value>) -> Result<u64, String> {
 }
 
 pub fn parse_manifest(data: &Value, quality: &str) -> Result<Vec<ResourceItem>, String> {
-    if !matches!(quality, "sd" | "hd" | "uhd") {
+    if !matches!(quality, "" | "sd" | "hd" | "uhd") {
         return Err("Video quality must be sd, hd or uhd".into());
     }
     let packs = data
         .pointer("/VideoInfos/PakMap")
         .and_then(Value::as_object)
         .ok_or("Missing VideoInfos.PakMap in video manifest")?;
+    let directory = if quality.is_empty() {
+        "Client/Saved/Resources/Video/Paks".to_string()
+    } else {
+        format!("Client/Saved/Resources/Video/{quality}/Paks")
+    };
     let mut items = Vec::new();
     let mut filenames = HashSet::new();
     for (id, pack) in packs {
@@ -79,7 +84,7 @@ pub fn parse_manifest(data: &Value, quality: &str) -> Result<Vec<ResourceItem>, 
                 .ok_or_else(|| format!("Missing {hash_field} for video {id}"))?;
             validate_sha1(hash)?;
             items.push(ResourceItem {
-                dest: format!("Client/Saved/Resources/Video/{quality}/Paks/{id}/{name}"),
+                dest: format!("{directory}/{id}/{name}"),
                 remote_path: Some(name.to_string()),
                 checksum: Some(Checksum::Sha1(hash.to_string())),
                 size: Some(size(pack.get(size_field))?),
