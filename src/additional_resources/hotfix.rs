@@ -39,13 +39,17 @@ pub(super) async fn discover_core(
             .collect()
     };
     let base = newest_config(client, urls("config.json"), &settings.crypto, "UpdateTime").await?;
-    let sd = optional_config(
-        client,
-        urls("config_sd.json"),
-        &settings.crypto,
-        "UpdateTime",
-    )
-    .await;
+    let sd = if manifest::supports_quality(&context.package_version)? {
+        optional_config(
+            client,
+            urls("config_sd.json"),
+            &settings.crypto,
+            "UpdateTime",
+        )
+        .await
+    } else {
+        Ok(None)
+    };
     let mut configs = vec![("config.json".to_string(), None, base)];
     if !matches!(sd, Ok(None)) {
         let selected = match quality {
@@ -76,13 +80,20 @@ pub(super) async fn discover_core(
             if tier.is_some() && key == "launcher" {
                 continue;
             }
-            let info = config
-                .pointer(&format!("/ResVersions/{key}"))
-                .ok_or_else(|| format!("Missing {key} in {config_name}"))?;
-            let version = info
-                .get("Version")
+            let (version, hashes) = if let Some(versions) = config.get("ResVersions") {
+                let info = versions
+                    .get(key)
+                    .ok_or_else(|| format!("Missing {key} in {config_name}"))?;
+                (info.get("Version"), info.get("IndexSha1"))
+            } else {
+                (
+                    config.get(format!("{label}Version")),
+                    config.get(format!("{label}IndexSha1")),
+                )
+            };
+            let version = version
                 .and_then(Value::as_str)
-                .ok_or("Missing core resource version")?;
+                .ok_or_else(|| format!("Missing {label}Version in {config_name}"))?;
             manifest::validate_version(version)?;
             if version.rsplit_once('.').map(|(prefix, _)| prefix)
                 != context
@@ -92,8 +103,7 @@ pub(super) async fn discover_core(
             {
                 return Err("Core resource version belongs to a different game package".into());
             }
-            let hash = info
-                .get("IndexSha1")
+            let hash = hashes
                 .and_then(|hashes| hashes.get(version))
                 .and_then(Value::as_str);
             let hash = match hash {
@@ -106,7 +116,17 @@ pub(super) async fn discover_core(
                 Some(ref tier) => format!("{label}_{tier}"),
                 None => label.to_string(),
             };
-            let route = format!("{}/Windows/{version}/Manifest{group}.txt", context.mix);
+            let legacy = config.get("ResVersions").is_none();
+            let route = if legacy {
+                let prefix = if key == "launcher" {
+                    "UpdaterPatchList"
+                } else {
+                    "PatchList"
+                };
+                format!("{}/Windows/{prefix}_{version}.txt", context.res)
+            } else {
+                format!("{}/Windows/{version}/Manifest{group}.txt", context.mix)
+            };
             let mut found = None;
             let mut last_error = String::new();
             for prefix in &context.prefixes {
@@ -116,8 +136,17 @@ pub(super) async fn discover_core(
                     if !format!("{:x}", Sha1::digest(&bytes)).eq_ignore_ascii_case(hash) {
                         return Err(format!("Core manifest SHA-1 mismatch from {prefix}"));
                     }
+                    let data = settings.crypto.decode(&bytes)?;
+                    if legacy {
+                        return parse_patch_list(
+                            &data,
+                            &context.package_version,
+                            &group,
+                            &context.res,
+                        );
+                    }
                     parse_manifest(
-                        &settings.crypto.decode(&bytes)?,
+                        &data,
                         &context.package_version,
                         version,
                         &group,
@@ -140,6 +169,72 @@ pub(super) async fn discover_core(
         }
     }
     Ok(plan)
+}
+
+fn parse_patch_list(
+    data: &Value,
+    package: &str,
+    group: &str,
+    res_route: &str,
+) -> Result<Vec<ResourceItem>, String> {
+    manifest::validate_version(package)?;
+    if !matches!(group, "Launcher" | "Resource") || !manifest::safe_component(res_route) {
+        return Err("Invalid legacy resource group or route".into());
+    }
+    let rows = data
+        .get(package)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("Patch list has no entries for installed package {package}"))?;
+    let mut resources = Vec::new();
+    let mut seen = HashSet::new();
+    for row in rows {
+        let row = row.as_str().ok_or("Invalid legacy patch list row")?;
+        if row.is_empty() {
+            continue;
+        }
+        let fields: Vec<_> = row.split(',').collect();
+        if fields.len() < 12 {
+            return Err("Incomplete legacy patch list row".into());
+        }
+        let stem = fields[0]
+            .strip_suffix(".pak")
+            .ok_or("Invalid legacy PAK filename")?;
+        if !manifest::safe_component(stem) || !seen.insert(stem.to_string()) {
+            return Err("Invalid or duplicate legacy patch filename".into());
+        }
+        let mut has_pak = false;
+        let mut has_sig = false;
+        for (extension, size_field, hash_field) in [
+            ("pak", 4, 5),
+            ("utoc", 6, 7),
+            ("ucas", 8, 9),
+            ("sig", 10, 11),
+        ] {
+            let size: u64 = fields[size_field]
+                .parse()
+                .map_err(|_| "Invalid legacy patch file size")?;
+            if size == 0 {
+                continue;
+            }
+            let hash = fields[hash_field];
+            manifest::validate_sha1(hash)?;
+            has_pak |= extension == "pak";
+            has_sig |= extension == "sig";
+            let name = format!("{stem}.{extension}");
+            resources.push(ResourceItem {
+                dest: format!("Client/Saved/Resources/{package}/{group}/{name}"),
+                remote_path: Some(format!("{res_route}/Windows/{name}")),
+                checksum: Some(Checksum::Sha1(hash.to_string())),
+                size: Some(size),
+            });
+        }
+        if has_pak && !has_sig {
+            return Err(format!(
+                "Legacy patch list is missing the signature for {stem}"
+            ));
+        }
+    }
+    Ok(resources)
 }
 
 pub fn parse_manifest(

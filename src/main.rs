@@ -75,16 +75,10 @@ async fn main() {
         None
     };
 
-    let mut additional_resources_settings = if mode == "resources" {
-        match AdditionalResourcesSettings::load().await {
-            Ok(settings) => Some(settings),
-            Err(e) => exit_with_error(&log_file, &e),
-        }
-    } else {
-        None
-    };
+    let mut additional_resources_settings =
+        (mode == "resources").then(AdditionalResourcesSettings::default);
     let directory = if let Some(settings) = &mut additional_resources_settings {
-        settings.configure(&client).await
+        settings.configure().await
     } else {
         get_dir().map_err(|e| e.to_string())
     };

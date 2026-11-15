@@ -72,41 +72,16 @@ cargo build --release
    - Total files
 8. Press Enter to exit only when there are no unprocessed files
 
-### Experimental: Additional resources for an installed game
-
-> **Experimental:** Additional resource downloads have only been tested with game version **3.8**.
-
+### Additional resources for an installed game
 The downloader saves videos and core hotfix files under `Client/Saved/Resources`; it does not install the base game.
 
 1. Select **3. Additional resources for an installed game**, then choose the installed Windows game root containing `Client`. Press Enter to use the current directory.
-2. If the bootstrap INIs are inside the base PAK, configure a compatible `vrepak` executable and an AES key source: a local JSON file or HTTP(S) endpoint. Neither is needed when both `Client/Config/Kuro/KuroPublicConfig.ini` and `Client/Config/Package/ParamsConfig.ini` exist as loose files.
-3. Set worker counts, then choose **Videos**, **Core hotfixes**, **Both**, or **Cancel** using numbered choices.
-4. Choose SD, HD, or UHD quality. For videos, choose all packages or specific IDs. Available IDs are displayed; a number such as `100` selects all its variants, while `100_0` selects one variant.
-5. Review the summary and download progress. Sizes are shown in GiB.
+2. If configuration files are packed, configure `vrepak` and enter the main AES key for your game build.
+3. Set worker counts. Versions before 3.2 download core hotfixes only; from 3.2 onward, choose videos, core hotfixes, or both.
+4. From version 3.7 onward, choose SD, HD, or UHD quality when offered. Earlier versions do not prompt for quality. For videos, select all packages or specific IDs: `100` selects all variants; `100_0` selects one.
+5. Review the summary and download progress.
 
-Extracting bootstrap configuration from the base PAK requires [vrepak](https://github.com/qzwtrp/vrepak), installed separately. Use a build supporting `--engine wuthering-waves --aes-key <key> get <pak> <entry>`. Discovery checks the saved path, `WUWA_VREPAK`, PATH, the downloader's directory, and the current directory. AES keys must match your installed game build. Set `WUWA_KEYS_FILE` to provide a default AES key source.
-
-Preferences are saved in `additional-resources-settings.json` in the working directory. Set `WUWA_ADDITIONAL_RESOURCES_SETTINGS` to use another settings file. Relative paths loaded from settings are resolved against that file's directory. A typical keys document has this structure (replace the placeholders with valid hexadecimal values):
-
-```json
-{
-  "mainKey": "<64 hexadecimal digits, optionally prefixed with 0x>",
-  "dynamicKeys": [
-    {"guid": "<32 hexadecimal digits, with optional hyphens>", "key": "<64 hexadecimal digits>"}
-  ]
-}
-```
-
-The default keys expression is `$['mainKey','dynamicKeys']`. A custom JSONPath expression can select these values from differently structured endpoint responses. Keys are loaded for the current run; the settings file stores the source and expression rather than the returned keys.
-
-Advanced settings:
-
-- `entry_urls` (bootstrap index URLs) with `package_version` bypasses local bootstrap extraction.
-- `package_version` alone overrides the INI version.
-- `parallel` selects a named bootstrap entry.
-- `crypto` supplies the Base64 `key` and `iv` for remote configuration decoding.
-
-Most installations should use automatic bootstrap discovery and the bundled crypto defaults.
+Extracting bootstrap configuration from PAK archives requires [vrepak](https://github.com/qzwtrp/vrepak), installed separately. Use a build supporting `--engine wuthering-waves --aes-key <key> get <pak> <entry>`. Discovery checks `WUWA_VREPAK`, PATH, the downloader's directory, and the current directory. AES keys must match your installed game build.
 
 ## 🔍 Technical Details
 ### How It Works

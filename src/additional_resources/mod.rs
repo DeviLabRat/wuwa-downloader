@@ -3,7 +3,6 @@ mod bootstrap;
 mod hotfix;
 pub use additional::discover_resources;
 mod crypto;
-mod keys;
 mod manifest;
 mod settings;
 pub use settings::AdditionalResourcesSettings;
@@ -116,22 +115,11 @@ async fn optional_config(
     }
 }
 
-fn entry_fields<'a>(
-    entry: &'a Value,
-    parallel: Option<&str>,
-) -> Result<(Vec<String>, &'a str, &'a str), String> {
+fn entry_fields(entry: &Value) -> Result<(Vec<String>, &str, &str), String> {
     let default = entry
         .get("default")
         .ok_or("Remote entry has no default configuration")?;
-    let override_config = parallel.and_then(|name| entry.get(name));
-    if parallel.is_some() && override_config.is_none() {
-        return Err("Configured parallel entry does not exist in the bootstrap response".into());
-    }
-    let field = |key: &str| {
-        override_config
-            .and_then(|v| v.get(key))
-            .or_else(|| default.get(key))
-    };
+    let field = |key: &str| default.get(key);
     let cdns = field("CdnUrl")
         .and_then(Value::as_array)
         .ok_or("Missing resource CDN list")?;
@@ -182,7 +170,7 @@ async fn resource_context(
 ) -> Result<ResourceContext, String> {
     let bootstrap = bootstrap::discover(folder, settings).await?;
     let entry = newest_config(client, bootstrap.entry_urls, &settings.crypto, "ModifyTime").await?;
-    let (prefixes, mix, res) = entry_fields(&entry, settings.parallel.as_deref())?;
+    let (prefixes, mix, res) = entry_fields(&entry)?;
     Ok(ResourceContext {
         prefixes,
         mix: mix.to_string(),
@@ -217,6 +205,15 @@ async fn discover_videos(
     let (config, quality) = match legacy {
         Ok(Some(config)) => (config, String::new()),
         fallback => {
+            if !manifest::supports_quality(&context.package_version)? {
+                return Err(match fallback {
+                    Err(error) => error,
+                    _ => format!(
+                        "No video configuration for game {}",
+                        context.package_version
+                    ),
+                });
+            }
             let quality = match selected_quality {
                 Some(quality) => quality,
                 None => selected_quality.insert(ask_quality()?),

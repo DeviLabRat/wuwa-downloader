@@ -25,6 +25,27 @@ pub fn validate_version(version: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn version_pair(version: &str) -> Result<(u64, u64), String> {
+    validate_version(version)?;
+    let mut parts = version.split('.');
+    let mut part = || {
+        parts
+            .next()
+            .unwrap()
+            .parse::<u64>()
+            .map_err(|_| "Invalid game version".to_string())
+    };
+    Ok((part()?, part()?))
+}
+
+pub fn supports_videos(version: &str) -> Result<bool, String> {
+    Ok(version_pair(version)? >= (3, 2))
+}
+
+pub fn supports_quality(version: &str) -> Result<bool, String> {
+    Ok(version_pair(version)? >= (3, 7))
+}
+
 pub fn validate_sha1(value: &str) -> Result<(), String> {
     if value.len() != 40 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid SHA-1 in resource configuration or manifest".into());

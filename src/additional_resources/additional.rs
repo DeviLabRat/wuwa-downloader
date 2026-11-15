@@ -69,10 +69,18 @@ pub async fn discover_resources(
     folder: &Path,
     settings: &AdditionalResourcesSettings,
 ) -> Result<Option<(Config, Vec<ResourceItem>)>, String> {
-    let Some(content) = choose_content()? else {
-        return Ok(None);
-    };
     let context = resource_context(client, folder, settings).await?;
+    let content = if super::manifest::supports_videos(&context.package_version)? {
+        let Some(content) = choose_content()? else {
+            return Ok(None);
+        };
+        content
+    } else {
+        Content {
+            videos: false,
+            core: true,
+        }
+    };
     let mut resources = Vec::new();
     let mut quality = None;
     if content.core {

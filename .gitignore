@@ -32,6 +32,7 @@ Client/
 Engine/
 ClearThirdParty.exe
 Wuthering Waves.exe
-.DS_Store
-additional-resources-settings.json
 
+# Additional
+.vscode/
+.DS_Store
