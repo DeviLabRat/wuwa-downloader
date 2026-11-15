@@ -14,7 +14,7 @@ use tokio::time::sleep;
 use crate::config::cfg::Config;
 use crate::config::status::Status;
 use crate::download::progress::DownloadProgress;
-use crate::io::file::{file_size, get_filename};
+use crate::io::file::{file_size, get_filename, resource_local_path};
 use crate::io::logging::{SharedLogFile, log_error};
 use crate::io::util::{clear_screen, get_version, read_line};
 
@@ -405,7 +405,7 @@ pub async fn download_file(
     }
 
     let normalized_dest = dest.replace('\\', "/");
-    let path = folder.join(&normalized_dest);
+    let path = resource_local_path(folder, &normalized_dest);
     let filename = get_filename(&normalized_dest);
     let mut counted_bytes_for_file = 0_u64;
     let track_total = expected_size.is_some();

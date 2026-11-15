@@ -161,6 +161,12 @@ pub async fn file_size(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// Manifest paths are relative to the game root, even when prefixed with a slash.
+pub fn resource_local_path(folder: &Path, dest: &str) -> PathBuf {
+    let normalized = dest.replace('\\', "/");
+    folder.join(normalized.trim_start_matches('/'))
+}
+
 pub fn get_filename(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -213,6 +219,26 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn resource_paths_stay_relative_to_download_folder() {
+        let folder = PathBuf::from("downloads/game");
+        for dest in [
+            "Client/Content/file.pak",
+            "/Client/Content/file.pak",
+            "\\Client\\Content\\file.pak",
+            "//Client/Content/file.pak",
+        ] {
+            assert_eq!(
+                super::resource_local_path(&folder, dest),
+                folder.join("Client/Content/file.pak")
+            );
+        }
+        assert_eq!(
+            super::resource_local_path(&folder, "/ClearThirdParty.exe"),
+            folder.join("ClearThirdParty.exe")
+        );
+    }
 
     fn unique_path(name: &str) -> PathBuf {
         let nanos = SystemTime::now()

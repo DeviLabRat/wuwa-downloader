@@ -12,6 +12,7 @@ use crate::config::cfg::{Config, DownloadOptions, ResourceItem};
 use crate::download::progress::{DownloadProgress, ProgressDisplay};
 use crate::io::file::{
     VerificationError, calculate_md5_interruptible, check_existing_file_interruptible, file_size,
+    resource_local_path,
 };
 use crate::io::logging::{SharedLogFile, log_error};
 use crate::network::client::download_file;
@@ -83,7 +84,7 @@ async fn verification_worker(
         }
 
         let expected_size = item.size;
-        let local_path = folder.join(item.dest.replace('\\', "/"));
+        let local_path = resource_local_path(&folder, &item.dest);
         let event = match check_existing_file_interruptible(
             &local_path,
             item.md5.as_deref(),
@@ -228,7 +229,7 @@ async fn post_verify_worker(
 ) {
     while let Ok(task) = rx.recv().await {
         let filename = display_filename(&task.item.dest);
-        let path = folder.join(task.item.dest.replace('\\', "/"));
+        let path = resource_local_path(&folder, &task.item.dest);
 
         if should_stop.load(Ordering::SeqCst) {
             let _ = event_tx.send(PipelineEvent::PostVerifyAborted);
@@ -337,7 +338,7 @@ pub async fn run_pipeline(
             break;
         }
 
-        let local_path = folder.join(item.dest.replace('\\', "/"));
+        let local_path = resource_local_path(&folder, &item.dest);
         let needs_verify = match tokio::fs::metadata(&local_path).await {
             Ok(meta) => {
                 if let Some(expected_size) = item.size {
