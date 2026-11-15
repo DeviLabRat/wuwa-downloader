@@ -1,4 +1,5 @@
 use md5::{Digest, Md5};
+use sha1::Sha1;
 use std::{
     fs,
     io::{self, BufReader, Read, Write},
@@ -7,6 +8,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use crate::config::cfg::Checksum;
 use crate::config::status::Status;
 use crate::io::util::read_line;
 
@@ -26,9 +28,16 @@ fn calculate_md5_sync_interruptible(
     path: &Path,
     should_stop: Option<Arc<AtomicBool>>,
 ) -> io::Result<String> {
+    calculate_hash_sync::<Md5>(path, should_stop)
+}
+
+fn calculate_hash_sync<D: Digest + Default>(
+    path: &Path,
+    should_stop: Option<Arc<AtomicBool>>,
+) -> io::Result<String> {
     let file = fs::File::open(path)?;
     let mut reader = BufReader::with_capacity(262_144, file);
-    let mut hasher = Md5::new();
+    let mut hasher = D::default();
     let mut buffer = [0_u8; 262_144];
 
     loop {
@@ -49,7 +58,38 @@ fn calculate_md5_sync_interruptible(
         hasher.update(&buffer[..read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    let digest = hasher.finalize();
+    let mut result = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        write!(&mut result, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(result)
+}
+
+pub async fn verify_checksum_interruptible(
+    path: &Path,
+    checksum: &Checksum,
+    should_stop: Arc<AtomicBool>,
+) -> Result<bool, VerificationError> {
+    let path = path.to_path_buf();
+    let checksum = checksum.clone();
+    tokio::task::spawn_blocking(move || {
+        let actual = match &checksum {
+            Checksum::Md5(_) => calculate_hash_sync::<Md5>(&path, Some(should_stop)),
+            Checksum::Sha1(_) => calculate_hash_sync::<Sha1>(&path, Some(should_stop)),
+        };
+        actual.map(|actual| actual.eq_ignore_ascii_case(checksum.expected()))
+    })
+    .await
+    .map_err(|e| VerificationError::Io(io::Error::other(format!("Checksum task failed: {e}"))))?
+    .map_err(|e| {
+        if e.to_string() == CHECKSUM_CANCELLATION_ERROR {
+            VerificationError::Interrupted
+        } else {
+            VerificationError::Io(e)
+        }
+    })
 }
 
 pub async fn calculate_md5(path: &Path) -> Result<String, String> {
@@ -121,6 +161,16 @@ pub async fn check_existing_file_interruptible(
     expected_size: Option<u64>,
     should_stop: Arc<AtomicBool>,
 ) -> Result<bool, VerificationError> {
+    let checksum = expected_md5.map(|value| Checksum::Md5(value.to_string()));
+    check_existing_resource_interruptible(path, checksum.as_ref(), expected_size, should_stop).await
+}
+
+pub async fn check_existing_resource_interruptible(
+    path: &Path,
+    checksum: Option<&Checksum>,
+    expected_size: Option<u64>,
+    should_stop: Arc<AtomicBool>,
+) -> Result<bool, VerificationError> {
     let metadata = match tokio::fs::metadata(path).await {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
@@ -138,10 +188,10 @@ pub async fn check_existing_file_interruptible(
         return Ok(true);
     }
 
-    if let Some(md5) = expected_md5 {
-        match calculate_md5_interruptible(path, should_stop).await {
-            Ok(actual_md5) if actual_md5 == md5 => {}
-            Ok(_) => {
+    if let Some(checksum) = checksum {
+        match verify_checksum_interruptible(path, checksum, should_stop).await {
+            Ok(true) => {}
+            Ok(false) => {
                 tokio::fs::remove_file(path)
                     .await
                     .map_err(VerificationError::Io)?;
@@ -184,6 +234,12 @@ pub fn get_dir() -> Result<PathBuf, io::Error> {
         io::stdout().flush()?;
 
         let input = read_line()?;
+        if input.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Input closed before directory selection",
+            ));
+        }
         let path = input.trim();
 
         let path = if path.is_empty() {
@@ -246,6 +302,32 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("wuwa-downloader-{name}-{nanos}"))
+    }
+
+    #[tokio::test]
+    async fn sha1_verification_accepts_uppercase_and_rejects_same_size_corruption() {
+        let path = unique_path("sha1");
+        fs::write(&path, b"abc").unwrap();
+        let checksum =
+            crate::config::cfg::Checksum::Sha1("A9993E364706816ABA3E25717850C26C9CD0D89D".into());
+        let stop = Arc::new(AtomicBool::new(false));
+        assert!(
+            !super::check_existing_resource_interruptible(
+                &path,
+                Some(&checksum),
+                Some(3),
+                stop.clone(),
+            )
+            .await
+            .unwrap()
+        );
+        fs::write(&path, b"xyz").unwrap();
+        assert!(
+            super::check_existing_resource_interruptible(&path, Some(&checksum), Some(3), stop,)
+                .await
+                .unwrap()
+        );
+        assert!(!path.exists());
     }
 
     #[tokio::test]

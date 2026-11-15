@@ -3,7 +3,7 @@ use reqwest::Client;
 
 #[cfg(not(target_os = "windows"))]
 use std::process::Command;
-use std::sync::atomic::Ordering;
+use std::sync::{Arc, atomic::AtomicBool};
 
 #[cfg(windows)]
 use winconsole::console::{clear, set_title};
@@ -34,6 +34,7 @@ fn enable_ansi_support() {
 }
 
 use wuwa_downloader::{
+    additional_resources::{self, AdditionalResourcesSettings},
     config::status::Status,
     download::pipeline::run_pipeline,
     io::{
@@ -42,7 +43,7 @@ use wuwa_downloader::{
         logging::setup_logging,
         util::{ask_concurrency, exit_with_error, parse_resources, setup_ctrlc},
     },
-    network::client::{fetch_index, get_config},
+    network::client::{ask_download_mode, fetch_index, get_config},
 };
 
 #[tokio::main]
@@ -61,17 +62,29 @@ async fn main() {
     let log_file = setup_logging();
     let client = Client::new();
 
-    let config = match get_config(&client).await {
-        Ok(c) => c,
+    let mode = match ask_download_mode(&client) {
+        Ok(mode) => mode,
         Err(e) => exit_with_error(&log_file, &e),
     };
+    let config = if mode != "resources" {
+        match get_config(&client, &mode).await {
+            Ok(c) => Some(c),
+            Err(e) => exit_with_error(&log_file, &e),
+        }
+    } else {
+        None
+    };
 
-    let folder = match get_dir() {
+    let mut additional_resources_settings =
+        (mode == "resources").then(AdditionalResourcesSettings::default);
+    let directory = if let Some(settings) = &mut additional_resources_settings {
+        settings.configure().await
+    } else {
+        get_dir().map_err(|e| e.to_string())
+    };
+    let folder = match directory {
         Ok(folder) => folder,
-        Err(e) => exit_with_error(
-            &log_file,
-            &format!("Failed to read download directory: {}", e),
-        ),
+        Err(e) => exit_with_error(&log_file, &format!("Failed to configure download: {}", e)),
     };
     let options = match ask_concurrency() {
         Ok(options) => options,
@@ -99,29 +112,42 @@ async fn main() {
         options.verify_concurrency.to_string().cyan()
     );
 
-    let mut resources = Vec::new();
-    for index_url in &config.index_urls {
-        let data = match fetch_index(&client, index_url, &log_file).await {
-            Ok(data) => data,
-            Err(e) => exit_with_error(&log_file, &e),
-        };
-        match parse_resources(&data) {
-            Ok(items) => resources.extend(items),
-            Err(err) => exit_with_error(&log_file, &err),
+    let (config, resources) = if let Some(config) = config {
+        let mut resources = Vec::new();
+        for index_url in &config.index_urls {
+            let data = match fetch_index(&client, index_url, &log_file).await {
+                Ok(data) => data,
+                Err(e) => exit_with_error(&log_file, &e),
+            };
+            match parse_resources(&data) {
+                Ok(items) => resources.extend(items),
+                Err(err) => exit_with_error(&log_file, &err),
+            }
         }
-    }
+
+        (config, resources)
+    } else if let Some(settings) = additional_resources_settings {
+        match additional_resources::discover_resources(&client, &folder, &settings).await {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return,
+            Err(error) => exit_with_error(&log_file, &error),
+        }
+    } else {
+        unreachable!(
+            "download mode must provide either launcher configuration or resource settings"
+        );
+    };
 
     println!(
-        "{} Found {} files to download\n",
+        "{} Found {} files to check and/or download\n",
         Status::info(),
         resources.len().to_string().cyan()
     );
-    let should_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let should_stop = Arc::new(AtomicBool::new(false));
     setup_ctrlc(should_stop.clone());
-
     let result = run_pipeline(
-        std::sync::Arc::new(client),
-        std::sync::Arc::new(config),
+        Arc::new(client),
+        Arc::new(config),
         resources,
         folder.clone(),
         log_file.clone(),
@@ -135,7 +161,7 @@ async fn main() {
 
     print_results(&result, &folder);
 
-    if should_stop.load(Ordering::SeqCst) {
+    if should_stop.load(std::sync::atomic::Ordering::SeqCst) {
         std::process::exit(130);
     }
 }

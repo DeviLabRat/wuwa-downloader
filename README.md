@@ -29,7 +29,7 @@ High-performance, resilient downloader for Wuthering Waves with multi-CDN fallba
 - **Multi-CDN fallback**: Automatically tries multiple mirrors on failures
 - **Interactive version selection**: Choose Live/Beta and OS/CN variants
 - **Pipeline downloads**: Verification workers and download workers run concurrently
-- **Integrity checks**: Per-file MD5 verification; corrupted or oversized files are deleted before download
+- **Integrity checks**: Per-file MD5/SHA-1 verification; corrupted or oversized files are deleted before download
 - **Smart retries**: Up to 3 retry attempts per CDN with robust timeouts
 - **Streaming downloads**: Chunked I/O with resume support when possible
 - **Clear progress**: Verification bar, total download bar, and per-worker progress bars
@@ -72,6 +72,17 @@ cargo build --release
    - Total files
 8. Press Enter to exit only when there are no unprocessed files
 
+### Additional resources for an installed game
+The downloader saves videos and core hotfix files under `Client/Saved/Resources`; it does not install the base game.
+
+1. Select **3. Additional resources for an installed game**, then choose the installed Windows game root containing `Client`. Press Enter to use the current directory.
+2. If configuration files are packed, configure `vrepak` and enter the main AES key for your game build.
+3. Set worker counts. Versions before 3.2 download core hotfixes only; from 3.2 onward, choose videos, core hotfixes, or both.
+4. From version 3.7 onward, choose SD, HD, or UHD quality when offered. Earlier versions do not prompt for quality. For videos, select all packages or specific IDs: `100` selects all variants; `100_0` selects one.
+5. Review the summary and download progress.
+
+Extracting bootstrap configuration from PAK archives requires [vrepak](https://github.com/qzwtrp/vrepak), installed separately. Use a build supporting `--engine wuthering-waves --aes-key <key> get <pak> <entry>`. Discovery checks `WUWA_VREPAK`, PATH, the downloader's directory, and the current directory. AES keys must match your installed game build.
+
 ## 🔍 Technical Details
 ### How It Works
 - Remote config discovery via JSON
@@ -95,7 +106,7 @@ cargo build --release
   - Verification workers: `8`
   - Download workers: `4`
 - **Timeouts**: 30s for index/config fetches, extended timeout for transfers
-- **Logging**: 
+- **Logging**:
   - Errors: `logs.log`
 - **Progress**:
   - Verification progress bar
@@ -114,7 +125,7 @@ For detailed guides, workflow overview, and deeper technical explanations, see t
 ## 🧪 Development
 ### Environment Setup
 - **Required**: Rust nightly (1.87.0-nightly+)
-- **Dependencies**: 
+- **Dependencies**:
   - `reqwest`
   - `indicatif`
   - `flate2`

@@ -12,7 +12,7 @@ use winconsole::console::clear;
 
 use crate::{
     config::{
-        cfg::{DownloadOptions, ResourceItem},
+        cfg::{Checksum, DownloadOptions, ResourceItem},
         status::Status,
     },
     io::logging::{SharedLogFile, log_error},
@@ -29,10 +29,11 @@ pub fn parse_resources(data: &Value) -> Result<Vec<ResourceItem>, String> {
         if let Some(dest) = item.get("dest").and_then(Value::as_str) {
             parsed.push(ResourceItem {
                 dest: dest.to_string(),
-                md5: item
+                remote_path: None,
+                checksum: item
                     .get("md5")
                     .and_then(Value::as_str)
-                    .map(|md5| md5.to_string()),
+                    .map(|md5| Checksum::Md5(md5.to_string())),
                 size: item.get("size").and_then(Value::as_u64),
             });
         }

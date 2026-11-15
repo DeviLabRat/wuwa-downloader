@@ -11,8 +11,8 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::config::cfg::{Config, DownloadOptions, ResourceItem};
 use crate::download::progress::{DownloadProgress, ProgressDisplay};
 use crate::io::file::{
-    VerificationError, calculate_md5_interruptible, check_existing_file_interruptible, file_size,
-    resource_local_path,
+    VerificationError, check_existing_resource_interruptible, file_size, resource_local_path,
+    verify_checksum_interruptible,
 };
 use crate::io::logging::{SharedLogFile, log_error};
 use crate::network::client::download_file;
@@ -85,9 +85,9 @@ async fn verification_worker(
 
         let expected_size = item.size;
         let local_path = resource_local_path(&folder, &item.dest);
-        let event = match check_existing_file_interruptible(
+        let event = match check_existing_resource_interruptible(
             &local_path,
-            item.md5.as_deref(),
+            item.checksum.as_ref(),
             expected_size,
             should_stop.clone(),
         )
@@ -165,7 +165,7 @@ async fn download_worker(
         let ok = download_file(
             &client,
             &config,
-            &task.item.dest,
+            &task.item,
             &folder,
             task.expected_size,
             &log_file,
@@ -236,11 +236,8 @@ async fn post_verify_worker(
             break;
         }
 
-        let verification = if let Some(expected_md5) = task.item.md5.as_deref() {
-            match calculate_md5_interruptible(&path, should_stop.clone()).await {
-                Ok(actual_md5) => Ok(actual_md5 == expected_md5),
-                Err(err) => Err(err),
-            }
+        let verification = if let Some(checksum) = task.item.checksum.as_ref() {
+            verify_checksum_interruptible(&path, checksum, should_stop.clone()).await
         } else if let Some(expected_size) = task.expected_size {
             match tokio::fs::metadata(&path).await {
                 Ok(metadata) => Ok(metadata.len() == expected_size),

@@ -11,7 +11,7 @@ use std::{
 use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
 
-use crate::config::cfg::Config;
+use crate::config::cfg::{Config, ResourceItem};
 use crate::config::status::Status;
 use crate::download::progress::DownloadProgress;
 use crate::io::file::{file_size, get_filename, resource_local_path};
@@ -391,7 +391,7 @@ async fn try_download_with_cdns(
 pub async fn download_file(
     client: &Client,
     config: &Config,
-    dest: &str,
+    item: &ResourceItem,
     folder: &Path,
     expected_size: Option<u64>,
     log_file: &SharedLogFile,
@@ -404,7 +404,8 @@ pub async fn download_file(
         return false;
     }
 
-    let normalized_dest = dest.replace('\\', "/");
+    let normalized_dest = item.dest.replace('\\', "/");
+    let remote_path = item.remote_path.as_deref().unwrap_or(&normalized_dest);
     let path = resource_local_path(folder, &normalized_dest);
     let filename = get_filename(&normalized_dest);
     let mut counted_bytes_for_file = 0_u64;
@@ -430,7 +431,7 @@ pub async fn download_file(
     let first_pass = try_download_with_cdns(
         client,
         config,
-        &normalized_dest,
+        remote_path,
         &path,
         log_file,
         should_stop,
@@ -458,7 +459,7 @@ pub async fn download_file(
             match try_download_with_cdns(
                 client,
                 config,
-                &normalized_dest,
+                remote_path,
                 &path,
                 log_file,
                 should_stop,
@@ -514,19 +515,30 @@ pub fn ask_download_mode(_client: &Client) -> Result<String, String> {
         "{} 2. Custom version (provide resource URLs)",
         Status::question()
     );
+    println!(
+        "{} 3. Additional resources for an installed game",
+        Status::question()
+    );
 
     loop {
-        print!("\n{} Choose download mode (1 or 2): ", Status::question());
+        print!(
+            "\n{} Choose download mode (1, 2 or 3): ",
+            Status::question()
+        );
         io::stdout()
             .flush()
             .map_err(|e| format!("Failed to flush stdout: {}", e))?;
 
         let input = read_line().map_err(|e| format!("Failed to read input: {}", e))?;
+        if input.is_empty() {
+            return Err("Input closed before download mode selection".into());
+        }
 
         match input.trim() {
             "1" => return Ok("latest".to_string()),
             "2" => return Ok("custom".to_string()),
-            _ => println!("{} Invalid choice, please enter 1 or 2", Status::error()),
+            "3" => return Ok("resources".to_string()),
+            _ => println!("{} Invalid choice, please enter 1, 2 or 3", Status::error()),
         }
     }
 }
@@ -586,9 +598,7 @@ pub fn get_custom_config(_client: &Client) -> Result<Config, String> {
     })
 }
 
-pub async fn get_config(client: &Client) -> Result<Config, String> {
-    let mode = ask_download_mode(client)?;
-
+pub async fn get_config(client: &Client, mode: &str) -> Result<Config, String> {
     if mode == "custom" {
         return get_custom_config(client);
     }
@@ -673,49 +683,49 @@ pub async fn get_config(client: &Client) -> Result<Config, String> {
     let mut cdn_urls = Vec::new();
     let mut cdn_list_opt = config_data.get("cdnList").and_then(Value::as_array);
 
-    if cdn_list_opt.as_ref().map_or(true, |list| list.is_empty()) {
+    if cdn_list_opt.as_ref().is_none_or(|list| list.is_empty()) {
         let other_config = if selected_config == "default" {
             "predownload"
         } else {
             "default"
         };
-        if let Some(other_data) = config.get(other_config) {
-            if let Some(list) = other_data.get("cdnList").and_then(Value::as_array) {
-                if !list.is_empty() {
-                    println!(
-                        "{} CDN list missing in '{}', but found in '{}'.",
-                        Status::warning(),
-                        selected_config,
-                        other_config
-                    );
+        if let Some(list) = config
+            .get(other_config)
+            .and_then(|data| data.get("cdnList"))
+            .and_then(Value::as_array)
+            .filter(|list| !list.is_empty())
+        {
+            println!(
+                "{} CDN list missing in '{}', but found in '{}'.",
+                Status::warning(),
+                selected_config,
+                other_config
+            );
 
-                    loop {
-                        print!(
-                            "{} Do you want to use the CDN list from '{}'? [Y/n]: ",
-                            Status::question(),
-                            other_config
-                        );
-                        io::stdout()
-                            .flush()
-                            .map_err(|e| format!("Failed to flush stdout: {}", e))?;
+            loop {
+                print!(
+                    "{} Do you want to use the CDN list from '{}'? [Y/n]: ",
+                    Status::question(),
+                    other_config
+                );
+                io::stdout()
+                    .flush()
+                    .map_err(|e| format!("Failed to flush stdout: {}", e))?;
 
-                        let input =
-                            read_line().map_err(|e| format!("Failed to read input: {}", e))?;
+                let input = read_line().map_err(|e| format!("Failed to read input: {}", e))?;
 
-                        match input.trim().to_lowercase().as_str() {
-                            "y" | "yes" | "" => {
-                                cdn_list_opt = Some(list);
-                                break;
-                            }
-                            "n" | "no" => {
-                                break;
-                            }
-                            _ => println!(
-                                "{} Invalid choice, please press Enter for Yes, or 'n' for No",
-                                Status::error()
-                            ),
-                        }
+                match input.trim().to_lowercase().as_str() {
+                    "y" | "yes" | "" => {
+                        cdn_list_opt = Some(list);
+                        break;
                     }
+                    "n" | "no" => {
+                        break;
+                    }
+                    _ => println!(
+                        "{} Invalid choice, please press Enter for Yes, or 'n' for No",
+                        Status::error()
+                    ),
                 }
             }
         }
